@@ -1,12 +1,9 @@
-import { MongoClient } from 'mongodb';
-
 import { Scrape } from './scrape';
 import { Post, User } from './sites/medium/extract-types';
 import { Root } from './sites/medium/types';
 
 type URLTypes = "tag" | "year" | "month" | "day";
 type DataTypes = "post_summary" | "user" | "tag";
-const defaultUri = "mongodb://localhost:27017/crawlts";
 
 const getCDataJson = (body: string): Root => {
     const cDataContent = body.substring(body.lastIndexOf("<![CDATA[") + 9, body.lastIndexOf("]]"))
@@ -16,7 +13,6 @@ const getCDataJson = (body: string): Root => {
 
 (async () => {
 
-    const client = await MongoClient.connect(defaultUri, { useNewUrlParser: true });
     const scrape = new Scrape<URLTypes, DataTypes, Post | User>(
         {
             tag: (url, body) => {
@@ -53,7 +49,6 @@ const getCDataJson = (body: string): Root => {
                 };
             }
         },
-        client,
         10
     );
     await scrape.startScraping({ type: 'tag', url: "https://medium.com/tag/javascript/archive/" })

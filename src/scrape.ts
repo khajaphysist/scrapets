@@ -1,6 +1,8 @@
 import fetch from 'isomorphic-unfetch';
 import { Collection, MongoClient } from 'mongodb';
 
+const defaultUri = "mongodb://localhost:27017/crawlts";
+
 interface Url<T extends string> {
     type: T,
     url: string
@@ -20,32 +22,26 @@ type Extractors<UT extends string, DT extends string, D> = { [key in UT]: (url: 
 
 export class Scrape<UT extends string, DT extends string, D> {
     private extractors: Extractors<UT, DT, D>;
-    private client: MongoClient;
-    private pageRepo: Collection<Page<UT>>;
-    private dataRepo: Collection<Data<DT, D>>;
     private concurrency: number;
 
-    constructor(extractors: Extractors<UT, DT, D>, client: MongoClient, concurrency: number) {
+    constructor(extractors: Extractors<UT, DT, D>, concurrency: number) {
         this.extractors = extractors;
-        this.client = client;
-        this.pageRepo = client.db().collection("pages");
-        this.dataRepo = client.db().collection("data");
         this.concurrency = concurrency;
     }
 
-    private scrape = async (url: Url<UT>) => {
-        const page = await this.pageRepo.findOne({ url: { $eq: url } });
+    private scrape = async (url: Url<UT>, pageRepo: Collection<Page<UT>>, dataRepo: Collection<Data<DT, D>>) => {
+        const page = await pageRepo.findOne({ url: { $eq: url } });
         const body = page && page.content && page.content.length > 0 && page.state === 'fetched' ?
             page.content
             :
             await (async () => {
-                await this.pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: '', state: "fetching" } }, { upsert: true })
+                await pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: '', state: "fetching" } }, { upsert: true })
                 const data = await fetch(url.url).then(r => r.status === 200 ? r.text() : "").catch(e => console.log(e));
                 console.log("accessed: " + url.url);
                 if (data) {
-                    await this.pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: data, state: 'fetched' } }, { upsert: true })
+                    await pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: data, state: 'fetched' } }, { upsert: true })
                 } else {
-                    await this.pageRepo.deleteOne({ url: { $eq: url } })
+                    await pageRepo.deleteOne({ url: { $eq: url } })
                 }
                 return data
             })();
@@ -54,15 +50,15 @@ export class Scrape<UT extends string, DT extends string, D> {
             const { data, urls } = this.extractors[url.type](url.url, body)
             await Promise.all([
                 ...urls.map(async (u) => {
-                    const exist = await this.pageRepo.findOne({ url: { $eq: u } });
+                    const exist = await pageRepo.findOne({ url: { $eq: u } });
                     if (!exist) {
-                        await this.pageRepo.updateOne({ url: { $eq: u } }, { $set: { url: u, content: '', state: "not_fetched", createdAt: Date.now() } }, { upsert: true })
+                        await pageRepo.updateOne({ url: { $eq: u } }, { $set: { url: u, content: '', state: "not_fetched", createdAt: Date.now() } }, { upsert: true })
                     }
                 }),
                 ...data.map(async (d) => {
-                    const exist = await this.dataRepo.findOne({ key: d.key });
+                    const exist = await dataRepo.findOne({ key: d.key });
                     if (!exist) {
-                        await this.dataRepo.updateOne({ key: d.key }, { $set: { data: d.data, key: d.key, type: d.type } }, { upsert: true })
+                        await dataRepo.updateOne({ key: d.key }, { $set: { data: d.data, key: d.key, type: d.type } }, { upsert: true })
                     }
                 })
             ]);
@@ -70,9 +66,12 @@ export class Scrape<UT extends string, DT extends string, D> {
     }
 
     public async startScraping(url: Url<UT>) {
-        await this.scrape(url)
+        const client = await MongoClient.connect(defaultUri, { useNewUrlParser: true });
+        const pageRepo = client.db().collection("pages");
+        const dataRepo = client.db().collection("data");
+        await this.scrape(url, pageRepo, dataRepo)
         while (true) {
-            const cursor = await this.pageRepo.find({ content: '' }, { sort: { createdAt: 1 }, limit: this.concurrency });
+            const cursor = await pageRepo.find({ content: '' }, { sort: { createdAt: 1 }, limit: this.concurrency });
             const items: Page<UT>[] = [];
             while (await cursor.hasNext()) {
                 const next = await cursor.next();
@@ -83,8 +82,8 @@ export class Scrape<UT extends string, DT extends string, D> {
             if (items.length === 0) {
                 break;
             }
-            await Promise.all(items.map(i => this.scrape(i.url)));
+            await Promise.all(items.map(i => this.scrape(i.url, pageRepo, dataRepo)));
         }
-        await this.client.close();
+        await client.close();
     }
 }
