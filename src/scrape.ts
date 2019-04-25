@@ -41,7 +41,7 @@ export class Scrape<UT extends string, DT extends string, D> {
                 if (data) {
                     await pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: data, state: 'fetched' } }, { upsert: true })
                 } else {
-                    await pageRepo.deleteOne({ url: { $eq: url } })
+                    await pageRepo.updateOne({ url: { $eq: url } }, { $set: { url, content: '', state: "not_fetched" } }, { upsert: true })
                 }
                 return data
             })();
